@@ -1,0 +1,23 @@
+{
+  "name": "soundwave-backend",
+  "version": "1.0.0",
+  "description": "SoundWave backend music playlist manager and audio uploader",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "multer": "^1.4.5-lts.1",
+    "bcryptjs": "^2.4.3",
+    "jsonwebtoken": "^9.0.2",
+    "axios": "^1.7.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.3"
+  }
+}

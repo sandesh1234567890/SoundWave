@@ -1,0 +1,34 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "5000:5000"
+    environment:
+      - PORT=5000
+      - NODE_ENV=production
+      - JWT_SECRET=supersecretkeysoundwave2026
+    volumes:
+      # Persist the local database and audio file folders on the host machine
+      - ./backend/db.json:/usr/src/app/db.json
+      - ./backend/uploads:/usr/src/app/uploads
+      - ./backend/downloads:/usr/src/app/downloads
+    restart: always
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # IMPORTANT: If deploying to a remote server (e.g. AWS, DigitalOcean, GCP VM),
+        # replace "localhost" with the public IP address or domain name of your server.
+        - VITE_API_BASE=http://localhost:5000/api
+        - VITE_BACKEND_HOST=http://localhost:5000
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    restart: always
