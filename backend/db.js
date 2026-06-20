@@ -1,30 +1,34 @@
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
+import pg from 'pg';
+import dotenv from 'dotenv';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const DB_FILE = path.join(__dirname, 'db.json');
+dotenv.config();
 
-// Initial default data structure
-const defaultData = {
-  users: [],
-  playlists: [],
-  tracks: []
-};
+const { Pool } = pg;
 
-// Seed tracks (royalty-free music from public URLs for instant demo play)
+// Connection Pool Configuration
+const connectionString = process.env.DATABASE_URL;
+const pool = connectionString 
+  ? new Pool({ connectionString, ssl: { rejectUnauthorized: false } })
+  : new Pool({
+      host: process.env.DB_HOST || 'db.obziwglqklrzsfhpwscm.supabase.co',
+      port: parseInt(process.env.DB_PORT || '5432'),
+      user: process.env.DB_USER || 'postgres',
+      password: process.env.DB_PASSWORD || 'IN6UIr8IUujht187',
+      database: process.env.DB_DATABASE || 'postgres',
+      ssl: { rejectUnauthorized: false }
+    });
+
+// Initial default seed data
 const seedTracks = [
   {
     id: "seed-1",
     title: "Summer Breeze",
     artist: "Lofi Dreamer",
-    duration: 145, // in seconds
+    duration: 145,
     url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3",
     thumbnail: "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=300&auto=format&fit=crop&q=60",
     source: "upload",
-    uploadedBy: "system",
-    createdAt: new Date().toISOString()
+    uploadedBy: "system"
   },
   {
     id: "seed-2",
@@ -34,8 +38,7 @@ const seedTracks = [
     url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3",
     thumbnail: "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=300&auto=format&fit=crop&q=60",
     source: "upload",
-    uploadedBy: "system",
-    createdAt: new Date().toISOString()
+    uploadedBy: "system"
   },
   {
     id: "seed-3",
@@ -45,12 +48,10 @@ const seedTracks = [
     url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3",
     thumbnail: "https://images.unsplash.com/photo-1459749411175-04bf5292ceea?w=300&auto=format&fit=crop&q=60",
     source: "upload",
-    uploadedBy: "system",
-    createdAt: new Date().toISOString()
+    uploadedBy: "system"
   }
 ];
 
-// Seed playlists
 const seedPlaylists = [
   {
     id: "seed-playlist-1",
@@ -59,149 +60,262 @@ const seedPlaylists = [
     isPublic: true,
     createdBy: "system",
     creatorName: "SoundWave System",
-    trackIds: ["seed-1", "seed-2", "seed-3"],
-    createdAt: new Date().toISOString()
+    trackIds: ["seed-1", "seed-2", "seed-3"]
   }
 ];
 
-export function initDb() {
-  if (!fs.existsSync(DB_FILE)) {
-    const data = {
-      ...defaultData,
-      tracks: seedTracks,
-      playlists: seedPlaylists
-    };
-    fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2), 'utf-8');
-  } else {
-    // Verify file is valid JSON
-    try {
-      const content = fs.readFileSync(DB_FILE, 'utf-8');
-      const parsed = JSON.parse(content);
-      // Ensure key arrays exist
-      if (!parsed.users) parsed.users = [];
-      if (!parsed.playlists) parsed.playlists = [];
-      if (!parsed.tracks) parsed.tracks = [];
-      
-      // Ensure seed tracks and playlists exist if empty
-      if (parsed.tracks.length === 0) {
-        parsed.tracks = seedTracks;
-      }
-      if (parsed.playlists.length === 0) {
-        parsed.playlists = seedPlaylists;
-      }
-      fs.writeFileSync(DB_FILE, JSON.stringify(parsed, null, 2), 'utf-8');
-    } catch (err) {
-      console.error("Failed to parse db.json, recreating", err);
-      const data = {
-        ...defaultData,
-        tracks: seedTracks,
-        playlists: seedPlaylists
-      };
-      fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2), 'utf-8');
+// Initialize Database Tables
+export async function initDb() {
+  try {
+    // 1. Create Users Table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id VARCHAR(255) PRIMARY KEY,
+        username VARCHAR(255) UNIQUE NOT NULL,
+        display_name VARCHAR(255),
+        password VARCHAR(255) NOT NULL,
+        role VARCHAR(50) DEFAULT 'USER',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // 2. Create Tracks Table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS tracks (
+        id VARCHAR(255) PRIMARY KEY,
+        title VARCHAR(255) NOT NULL,
+        artist VARCHAR(255),
+        duration INTEGER,
+        url VARCHAR(1024),
+        thumbnail VARCHAR(1024),
+        source VARCHAR(50),
+        youtube_id VARCHAR(50),
+        is_public BOOLEAN DEFAULT false,
+        uploaded_by VARCHAR(255),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // 3. Create Playlists Table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS playlists (
+        id VARCHAR(255) PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        description TEXT,
+        is_public BOOLEAN DEFAULT false,
+        created_by VARCHAR(255),
+        creator_name VARCHAR(255),
+        track_ids TEXT[] DEFAULT '{}',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    console.log("Supabase PostgreSQL tables initialized successfully.");
+
+    // Seed default admin user if not exists
+    const adminCheck = await pool.query("SELECT * FROM users WHERE role = 'ADMIN' OR username = 'admin'");
+    if (adminCheck.rows.length === 0) {
+      const bcrypt = await import('bcryptjs');
+      const hashedAdminPassword = await bcrypt.default.hash('admin123', 10);
+      await pool.query(`
+        INSERT INTO users (id, username, display_name, password, role)
+        VALUES ($1, $2, $3, $4, $5)
+      `, ['user-admin', 'admin', 'System Administrator', hashedAdminPassword, 'ADMIN']);
+      console.log("Seeded default admin account: admin / admin123");
     }
-  }
-}
 
-export function readDb() {
-  try {
-    const data = fs.readFileSync(DB_FILE, 'utf-8');
-    return JSON.parse(data);
-  } catch (err) {
-    console.error("Read DB Error, returning empty defaults:", err);
-    return { users: [], playlists: [], tracks: [] };
-  }
-}
+    // Seed default tracks
+    const tracksCheck = await pool.query("SELECT * FROM tracks");
+    if (tracksCheck.rows.length === 0) {
+      for (const t of seedTracks) {
+        await pool.query(`
+          INSERT INTO tracks (id, title, artist, duration, url, thumbnail, source, is_public, uploaded_by)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        `, [t.id, t.title, t.artist, t.duration, t.url, t.thumbnail, t.source, true, t.uploadedBy]);
+      }
+      console.log("Seeded default royalty-free tracks.");
+    }
 
-export function writeDb(data) {
-  try {
-    fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2), 'utf-8');
-    return true;
+    // Seed default playlists
+    const playlistsCheck = await pool.query("SELECT * FROM playlists");
+    if (playlistsCheck.rows.length === 0) {
+      for (const p of seedPlaylists) {
+        await pool.query(`
+          INSERT INTO playlists (id, name, description, is_public, created_by, creator_name, track_ids)
+          VALUES ($1, $2, $3, $4, $5, $6, $7)
+        `, [p.id, p.name, p.description, p.isPublic, p.createdBy, p.creatorName, p.trackIds]);
+      }
+      console.log("Seeded default playlist.");
+    }
+
   } catch (err) {
-    console.error("Write DB Error:", err);
-    return false;
+    console.error("Failed to initialize database tables:", err);
   }
 }
 
 // User helper methods
-export function findUserByUsername(username) {
-  const db = readDb();
-  return db.users.find(u => u.username.toLowerCase() === username.toLowerCase());
+export async function findUserByUsername(username) {
+  const res = await pool.query("SELECT * FROM users WHERE LOWER(username) = LOWER($1)", [username]);
+  return res.rows[0] || null;
 }
 
-export function findUserById(id) {
-  const db = readDb();
-  return db.users.find(u => u.id === id);
+export async function findUserById(id) {
+  const res = await pool.query("SELECT * FROM users WHERE id = $1", [id]);
+  return res.rows[0] || null;
 }
 
-export function createUser(user) {
-  const db = readDb();
-  db.users.push(user);
-  writeDb(db);
+export async function createUser(user) {
+  const { id, username, displayName, password, role = 'USER' } = user;
+  await pool.query(`
+    INSERT INTO users (id, username, display_name, password, role)
+    VALUES ($1, $2, $3, $4, $5)
+  `, [id, username, displayName, password, role]);
   return user;
 }
 
-// Track helpers
-export function addTrack(track) {
-  const db = readDb();
-  db.tracks.push(track);
-  writeDb(db);
-  return track;
-}
-
-export function getTracks() {
-  const db = readDb();
-  return db.tracks;
-}
-
-// Playlist helpers
-export function addPlaylist(playlist) {
-  const db = readDb();
-  db.playlists.push(playlist);
-  writeDb(db);
-  return playlist;
-}
-
-export function getPlaylists() {
-  const db = readDb();
-  return db.playlists;
-}
-
-export function updatePlaylist(playlistId, updatedFields) {
-  const db = readDb();
-  const index = db.playlists.findIndex(p => p.id === playlistId);
-  if (index !== -1) {
-    db.playlists[index] = { ...db.playlists[index], ...updatedFields };
-    writeDb(db);
-    return db.playlists[index];
+// Track helper methods
+export async function findTrackById(id) {
+  const res = await pool.query("SELECT * FROM tracks WHERE id = $1", [id]);
+  if (res.rows[0]) {
+    return mapTrackFromDb(res.rows[0]);
   }
   return null;
 }
 
-export function deletePlaylist(playlistId) {
-  const db = readDb();
-  const index = db.playlists.findIndex(p => p.id === playlistId);
-  if (index !== -1) {
-    db.playlists.splice(index, 1);
-    writeDb(db);
+export async function addTrack(track) {
+  const { id, title, artist, duration, url, thumbnail, source, youtubeId = null, isPublic = false, uploadedBy } = track;
+  await pool.query(`
+    INSERT INTO tracks (id, title, artist, duration, url, thumbnail, source, youtube_id, is_public, uploaded_by)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+  `, [id, title, artist, duration, url, thumbnail, source, youtubeId, isPublic, uploadedBy]);
+  return track;
+}
+
+export async function getTracks() {
+  const res = await pool.query("SELECT * FROM tracks ORDER BY created_at DESC");
+  return res.rows.map(mapTrackFromDb);
+}
+
+export async function deleteTrack(trackId) {
+  const res = await pool.query("DELETE FROM tracks WHERE id = $1", [trackId]);
+  if (res.rowCount > 0) {
+    // Remove track from all playlists
+    await pool.query(`
+      UPDATE playlists
+      SET track_ids = array_remove(track_ids, $1)
+    `, [trackId]);
     return true;
   }
   return false;
 }
 
-export function deleteTrack(trackId) {
-  const db = readDb();
-  const index = db.tracks.findIndex(t => t.id === trackId);
-  if (index !== -1) {
-    db.tracks.splice(index, 1);
+// Playlist helper methods
+export async function findPlaylistById(id) {
+  const res = await pool.query("SELECT * FROM playlists WHERE id = $1", [id]);
+  if (res.rows[0]) {
+    return mapPlaylistFromDb(res.rows[0]);
+  }
+  return null;
+}
+
+export async function addPlaylist(playlist) {
+  const { id, name, description, isPublic = true, createdBy, creatorName, trackIds = [] } = playlist;
+  await pool.query(`
+    INSERT INTO playlists (id, name, description, is_public, created_by, creator_name, track_ids)
+    VALUES ($1, $2, $3, $4, $5, $6, $7)
+  `, [id, name, description, isPublic, createdBy, creatorName, trackIds]);
+  return playlist;
+}
+
+export async function getPlaylists() {
+  const res = await pool.query("SELECT * FROM playlists ORDER BY created_at DESC");
+  return res.rows.map(mapPlaylistFromDb);
+}
+
+export async function updatePlaylist(playlistId, updatedFields) {
+  const keys = Object.keys(updatedFields);
+  if (keys.length === 0) return null;
+  
+  const setClauses = [];
+  const values = [];
+  let index = 1;
+  
+  for (const key of keys) {
+    let columnName = key;
+    if (key === 'isPublic') columnName = 'is_public';
+    if (key === 'trackIds') columnName = 'track_ids';
     
-    // Also remove this track from all playlists
-    db.playlists.forEach(pl => {
-      pl.trackIds = pl.trackIds.filter(tid => tid !== trackId);
-    });
-    
-    writeDb(db);
+    setClauses.push(`${columnName} = $${index}`);
+    values.push(updatedFields[key]);
+    index++;
+  }
+  
+  values.push(playlistId);
+  await pool.query(`
+    UPDATE playlists 
+    SET ${setClauses.join(', ')} 
+    WHERE id = $${index}
+  `, values);
+  
+  return await findPlaylistById(playlistId);
+}
+
+export async function deletePlaylist(playlistId) {
+  const res = await pool.query("DELETE FROM playlists WHERE id = $1", [playlistId]);
+  return res.rowCount > 0;
+}
+
+// Admin helper methods
+export async function getAllUsers() {
+  const res = await pool.query("SELECT id, username, display_name, password, role, created_at FROM users ORDER BY created_at DESC");
+  return res.rows.map(row => ({
+    id: row.id,
+    username: row.username,
+    displayName: row.display_name,
+    password: row.password, // bcrypt hash
+    role: row.role,
+    createdAt: row.created_at
+  }));
+}
+
+export async function deleteUser(userId) {
+  const res = await pool.query("DELETE FROM users WHERE id = $1", [userId]);
+  if (res.rowCount > 0) {
+    // Delete tracks uploaded by user
+    await pool.query("DELETE FROM tracks WHERE uploaded_by = $1", [userId]);
+    // Delete playlists created by user
+    await pool.query("DELETE FROM playlists WHERE created_by = $1", [userId]);
     return true;
   }
   return false;
 }
 
+// Mappers
+function mapTrackFromDb(row) {
+  return {
+    id: row.id,
+    title: row.title,
+    artist: row.artist,
+    duration: row.duration,
+    url: row.url,
+    thumbnail: row.thumbnail,
+    source: row.source,
+    youtubeId: row.youtube_id,
+    isPublic: row.is_public,
+    uploadedBy: row.uploaded_by,
+    createdAt: row.created_at
+  };
+}
+
+function mapPlaylistFromDb(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    description: row.description,
+    isPublic: row.is_public,
+    createdBy: row.created_by,
+    creatorName: row.creator_name,
+    trackIds: row.track_ids || [],
+    createdAt: row.created_at
+  };
+}

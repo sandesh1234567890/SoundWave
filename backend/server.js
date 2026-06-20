@@ -11,18 +11,20 @@ import axios from 'axios';
 
 import {
   initDb,
-  readDb,
-  writeDb,
   findUserByUsername,
   findUserById,
   createUser,
+  findTrackById,
   addTrack,
   getTracks,
+  deleteTrack,
+  findPlaylistById,
   addPlaylist,
   getPlaylists,
   updatePlaylist,
   deletePlaylist,
-  deleteTrack
+  getAllUsers,
+  deleteUser
 } from './db.js';
 
 dotenv.config();
@@ -83,6 +85,15 @@ function authenticateToken(req, res, next) {
   });
 }
 
+// Helper: Admin verification middleware
+function requireAdmin(req, res, next) {
+  if (req.user && req.user.role === 'ADMIN') {
+    next();
+  } else {
+    res.status(403).json({ error: "Access denied. Admin role required." });
+  }
+}
+
 // Multer Storage Configuration for Audio Uploads
 const audioStorage = multer.diskStorage({
   destination: (req, file, cb) => {
@@ -126,25 +137,29 @@ app.post('/api/auth/signup', async (req, res) => {
     return res.status(400).json({ error: "Username and password are required" });
   }
 
-  const existingUser = findUserByUsername(username);
-  if (existingUser) {
-    return res.status(400).json({ error: "Username is already taken" });
-  }
-
   try {
+    const existingUser = await findUserByUsername(username);
+    if (existingUser) {
+      return res.status(400).json({ error: "Username is already taken" });
+    }
+
     const hashedPassword = await bcrypt.hash(password, 10);
     const newUser = {
       id: 'user-' + Date.now(),
       username,
       displayName: displayName || username,
       password: hashedPassword,
-      createdAt: new Date().toISOString()
+      role: username.toLowerCase() === 'admin' ? 'ADMIN' : 'USER'
     };
 
-    createUser(newUser);
+    await createUser(newUser);
 
-    // Generate token
-    const token = jwt.sign({ id: newUser.id, username: newUser.username }, JWT_SECRET, { expiresIn: '7d' });
+    // Generate token containing the user's role
+    const token = jwt.sign(
+      { id: newUser.id, username: newUser.username, role: newUser.role }, 
+      JWT_SECRET, 
+      { expiresIn: '7d' }
+    );
 
     res.status(201).json({
       message: "Account created successfully",
@@ -152,7 +167,8 @@ app.post('/api/auth/signup', async (req, res) => {
       user: {
         id: newUser.id,
         username: newUser.username,
-        displayName: newUser.displayName
+        displayName: newUser.displayName,
+        role: newUser.role
       }
     });
   } catch (err) {
@@ -167,18 +183,23 @@ app.post('/api/auth/login', async (req, res) => {
     return res.status(400).json({ error: "Username and password are required" });
   }
 
-  const user = findUserByUsername(username);
-  if (!user) {
-    return res.status(400).json({ error: "Invalid username or password" });
-  }
-
   try {
+    const user = await findUserByUsername(username);
+    if (!user) {
+      return res.status(400).json({ error: "Invalid username or password" });
+    }
+
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
       return res.status(400).json({ error: "Invalid username or password" });
     }
 
-    const token = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: '7d' });
+    // Generate token containing user's role
+    const token = jwt.sign(
+      { id: user.id, username: user.username, role: user.role }, 
+      JWT_SECRET, 
+      { expiresIn: '7d' }
+    );
 
     res.json({
       message: "Logged in successfully",
@@ -186,7 +207,8 @@ app.post('/api/auth/login', async (req, res) => {
       user: {
         id: user.id,
         username: user.username,
-        displayName: user.displayName
+        displayName: user.display_name,
+        role: user.role
       }
     });
   } catch (err) {
@@ -194,128 +216,145 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
-app.get('/api/auth/me', authenticateToken, (req, res) => {
-  const user = findUserById(req.user.id);
-  if (!user) {
-    return res.status(404).json({ error: "User not found" });
+app.get('/api/auth/me', authenticateToken, async (req, res) => {
+  try {
+    const user = await findUserById(req.user.id);
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+    res.json({
+      id: user.id,
+      username: user.username,
+      displayName: user.display_name,
+      role: user.role
+    });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to retrieve user: " + err.message });
   }
-  res.json({
-    id: user.id,
-    username: user.username,
-    displayName: user.displayName
-  });
 });
 
 
 // ================= TRACK ROUTES =================
 
 // Get all available tracks (respecting public/private settings)
-app.get('/api/tracks', (req, res) => {
+app.get('/api/tracks', async (req, res) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
   
-  const allTracks = getTracks();
-  const playlists = getPlaylists();
-  
-  // Find track IDs in public playlists
-  const publicPlaylistTrackIds = new Set();
-  playlists.filter(p => p.isPublic).forEach(pl => {
-    if (pl.trackIds) {
-      pl.trackIds.forEach(tid => publicPlaylistTrackIds.add(tid));
-    }
-  });
+  try {
+    const allTracks = await getTracks();
+    const playlists = await getPlaylists();
+    
+    // Find track IDs in public playlists
+    const publicPlaylistTrackIds = new Set();
+    playlists.filter(p => p.isPublic).forEach(pl => {
+      if (pl.trackIds) {
+        pl.trackIds.forEach(tid => publicPlaylistTrackIds.add(tid));
+      }
+    });
 
-  const getVisibleTracksForUser = (userId) => {
-    // Find track IDs in user's own playlists
-    const ownPlaylistTrackIds = new Set();
-    if (userId) {
-      playlists.filter(p => p.createdBy === userId).forEach(pl => {
-        if (pl.trackIds) {
-          pl.trackIds.forEach(tid => ownPlaylistTrackIds.add(tid));
-        }
-      });
-    }
+    const getVisibleTracksForUser = (userId) => {
+      // Find track IDs in user's own playlists
+      const ownPlaylistTrackIds = new Set();
+      if (userId) {
+        playlists.filter(p => p.createdBy === userId).forEach(pl => {
+          if (pl.trackIds) {
+            pl.trackIds.forEach(tid => ownPlaylistTrackIds.add(tid));
+          }
+        });
+      }
 
-    return allTracks.filter(t => 
-      t.uploadedBy === 'system' || 
-      (userId && t.uploadedBy === userId) || 
-      t.isPublic === true || 
-      publicPlaylistTrackIds.has(t.id) ||
-      (userId && ownPlaylistTrackIds.has(t.id))
-    );
-  };
+      return allTracks.filter(t => 
+        t.uploadedBy === 'system' || 
+        (userId && t.uploadedBy === userId) || 
+        t.isPublic === true || 
+        publicPlaylistTrackIds.has(t.id) ||
+        (userId && ownPlaylistTrackIds.has(t.id))
+      );
+    };
 
-  if (!token) {
-    return res.json(getVisibleTracksForUser(null));
-  }
-
-  jwt.verify(token, JWT_SECRET, (err, decodedUser) => {
-    if (err) {
+    if (!token) {
       return res.json(getVisibleTracksForUser(null));
     }
-    res.json(getVisibleTracksForUser(decodedUser.id));
-  });
+
+    jwt.verify(token, JWT_SECRET, (err, decodedUser) => {
+      if (err) {
+        return res.json(getVisibleTracksForUser(null));
+      }
+      res.json(getVisibleTracksForUser(decodedUser.id));
+    });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to fetch tracks: " + err.message });
+  }
 });
 
 // Delete a track
-app.delete('/api/tracks/:id', authenticateToken, (req, res) => {
+app.delete('/api/tracks/:id', authenticateToken, async (req, res) => {
   const { id } = req.params;
-  const db = readDb();
-  const track = db.tracks.find(t => t.id === id);
 
-  if (!track) {
-    return res.status(404).json({ error: "Track not found" });
-  }
+  try {
+    const track = await findTrackById(id);
 
-  // Only allow the uploader to delete the track
-  if (track.uploadedBy !== req.user.id) {
-    return res.status(403).json({ error: "You do not have permission to delete this track" });
-  }
+    if (!track) {
+      return res.status(404).json({ error: "Track not found" });
+    }
 
-  // Delete physical file if it is in uploads or downloads
-  if (track.url.startsWith('/uploads/') || track.url.startsWith('/downloads/')) {
-    const relativePath = track.url; // e.g. /uploads/upload-123.mp3
-    const absolutePath = path.join(__dirname, relativePath);
-    if (fs.existsSync(absolutePath)) {
-      try {
-        fs.unlinkSync(absolutePath);
-      } catch (err) {
-        console.warn(`Failed to delete physical file at ${absolutePath}:`, err);
+    // Only allow the uploader or admin to delete the track
+    if (track.uploadedBy !== req.user.id && req.user.role !== 'ADMIN') {
+      return res.status(403).json({ error: "You do not have permission to delete this track" });
+    }
+
+    // Delete physical file if it is in uploads or downloads
+    if (track.url.startsWith('/uploads/') || track.url.startsWith('/downloads/')) {
+      const relativePath = track.url;
+      const absolutePath = path.join(__dirname, relativePath);
+      if (fs.existsSync(absolutePath)) {
+        try {
+          fs.unlinkSync(absolutePath);
+        } catch (err) {
+          console.warn(`Failed to delete physical file at ${absolutePath}:`, err);
+        }
       }
     }
-  }
 
-  const deleted = deleteTrack(id);
-  if (deleted) {
-    res.json({ message: "Track deleted successfully", trackId: id });
-  } else {
-    res.status(500).json({ error: "Failed to delete track from database" });
+    const deleted = await deleteTrack(id);
+    if (deleted) {
+      res.json({ message: "Track deleted successfully", trackId: id });
+    } else {
+      res.status(500).json({ error: "Failed to delete track from database" });
+    }
+  } catch (err) {
+    res.status(500).json({ error: "Delete track failed: " + err.message });
   }
 });
 
 // Upload local audio file
-app.post('/api/tracks/upload', authenticateToken, upload.single('audio'), (req, res) => {
+app.post('/api/tracks/upload', authenticateToken, upload.single('audio'), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: "No audio file uploaded" });
   }
 
   const { title, artist, isPublic } = req.body;
   
-  const track = {
-    id: 'track-' + Date.now(),
-    title: title || req.file.originalname.replace(/\.[^/.]+$/, ""),
-    artist: artist || "Unknown Artist",
-    duration: 180, // Default duration, browser will calculate
-    url: `/uploads/${req.file.filename}`,
-    thumbnail: "https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=300&auto=format&fit=crop&q=60", // default vinyl record thumbnail
-    source: "upload",
-    isPublic: isPublic === 'true' || isPublic === true,
-    uploadedBy: req.user.id,
-    createdAt: new Date().toISOString()
-  };
+  try {
+    const track = {
+      id: 'track-' + Date.now(),
+      title: title || req.file.originalname.replace(/\.[^/.]+$/, ""),
+      artist: artist || "Unknown Artist",
+      duration: 180, // Default duration, browser will calculate
+      url: `/uploads/${req.file.filename}`,
+      thumbnail: "https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=300&auto=format&fit=crop&q=60", 
+      source: "upload",
+      isPublic: isPublic === 'true' || isPublic === true,
+      uploadedBy: req.user.id,
+      createdAt: new Date().toISOString()
+    };
 
-  addTrack(track);
-  res.status(201).json({ message: "Track uploaded successfully", track });
+    await addTrack(track);
+    res.status(201).json({ message: "Track uploaded successfully", track });
+  } catch (err) {
+    res.status(500).json({ error: "Upload track failed: " + err.message });
+  }
 });
 
 // Download/Import Youtube URL
@@ -326,7 +365,6 @@ app.post('/api/tracks/youtube', authenticateToken, async (req, res) => {
     return res.status(400).json({ error: "YouTube URL is required" });
   }
 
-  // Parse YouTube video ID
   const youtubeRegex = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/|youtube\.com\/shorts\/)([^"&?\/\s]{11})/i;
   const match = youtubeUrl.match(youtubeRegex);
   
@@ -337,7 +375,7 @@ app.post('/api/tracks/youtube', authenticateToken, async (req, res) => {
   const videoId = match[1];
 
   try {
-    // 1. Fetch metadata using noembed (CORS friendly and doesn't block)
+    // 1. Fetch metadata using noembed
     const metadataUrl = `https://noembed.com/embed?url=https://www.youtube.com/watch?v=${videoId}`;
     const metaResponse = await axios.get(metadataUrl);
     
@@ -349,9 +387,6 @@ app.post('/api/tracks/youtube', authenticateToken, async (req, res) => {
     const filename = `yt-${videoId}.mp3`;
     const localFilePath = path.join(DOWNLOADS_DIR, filename);
 
-    // In a real production setup, ytdl-core is highly volatile because of YouTube changes.
-    // We will attempt to fetch from a public converter API.
-    // If that fails, we fallback to a beautiful, pre-installed local lofi beat (to ensure the app never crashes!).
     let downloadSuccess = false;
 
     // Try a public YouTube converter API (vevioz or similar)
@@ -360,8 +395,6 @@ app.post('/api/tracks/youtube', authenticateToken, async (req, res) => {
       `https://convert2mp3s.com/api/button/mp3/${videoId}`
     ];
 
-    // Note: Since external APIs can be slow or offline, we set a 4-second timeout.
-    // If it fails, we fall back to a high-quality local MP3 file so it works instantaneously.
     for (const url of publicConverterUrls) {
       try {
         const response = await axios({
@@ -386,15 +419,13 @@ app.post('/api/tracks/youtube', authenticateToken, async (req, res) => {
       }
     }
 
-    // Fallback: If download failed or timed out, copy a royalty free track so the file exists and is playable
+    // Fallback: copy a random seed track to the physical file destination if download fails
     if (!downloadSuccess) {
-      const db = readDb();
-      // Select a random seed track to serve as the physical file
-      const seeds = db.tracks.filter(t => t.id.startsWith('seed-'));
+      const allTracks = await getTracks();
+      const seeds = allTracks.filter(t => t.id.startsWith('seed-'));
       const chosenSeed = seeds.length > 0 ? seeds[Math.floor(Math.random() * seeds.length)] : null;
       
       if (chosenSeed && chosenSeed.url.startsWith('http')) {
-        // Stream the soundhelix file directly as the download file
         try {
           const resStream = await axios({
             method: 'get',
@@ -409,7 +440,6 @@ app.post('/api/tracks/youtube', authenticateToken, async (req, res) => {
           });
           downloadSuccess = true;
         } catch (e) {
-          // If all network fails, create a dummy file
           fs.writeFileSync(localFilePath, 'dummy audio data');
         }
       } else {
@@ -421,7 +451,7 @@ app.post('/api/tracks/youtube', authenticateToken, async (req, res) => {
       id: 'track-yt-' + videoId,
       title,
       artist,
-      duration: 200, // estimated
+      duration: 200, 
       url: `/downloads/${filename}`,
       thumbnail,
       source: "youtube",
@@ -431,7 +461,7 @@ app.post('/api/tracks/youtube', authenticateToken, async (req, res) => {
       createdAt: new Date().toISOString()
     };
 
-    addTrack(track);
+    await addTrack(track);
     res.status(201).json({ 
       message: downloadSuccess ? "YouTube video imported and downloaded successfully" : "YouTube video metadata imported (audio simulated)", 
       track 
@@ -445,83 +475,89 @@ app.post('/api/tracks/youtube', authenticateToken, async (req, res) => {
 
 // ================= PLAYLIST ROUTES =================
 
-// Get all visible playlists (Public playlists + User's private playlists)
-app.get('/api/playlists', (req, res) => {
-  // Check if token exists in header
+// Get all visible playlists
+app.get('/api/playlists', async (req, res) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
   
-  const playlists = getPlaylists();
+  try {
+    const playlists = await getPlaylists();
 
-  if (!token) {
-    // Return only public playlists
-    return res.json(playlists.filter(p => p.isPublic));
-  }
-
-  jwt.verify(token, JWT_SECRET, (err, decodedUser) => {
-    if (err) {
-      // Token invalid, return only public playlists
+    if (!token) {
       return res.json(playlists.filter(p => p.isPublic));
     }
-    // Return public playlists plus user's own playlists
-    const visiblePlaylists = playlists.filter(p => p.isPublic || p.createdBy === decodedUser.id);
-    res.json(visiblePlaylists);
-  });
+
+    jwt.verify(token, JWT_SECRET, (err, decodedUser) => {
+      if (err) {
+        return res.json(playlists.filter(p => p.isPublic));
+      }
+      const visiblePlaylists = playlists.filter(p => p.isPublic || p.createdBy === decodedUser.id);
+      res.json(visiblePlaylists);
+    });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to retrieve playlists: " + err.message });
+  }
 });
 
 // Create a playlist
-app.post('/api/playlists', authenticateToken, (req, res) => {
+app.post('/api/playlists', authenticateToken, async (req, res) => {
   const { name, description, isPublic } = req.body;
 
   if (!name) {
     return res.status(400).json({ error: "Playlist name is required" });
   }
 
-  const user = findUserById(req.user.id);
-  
-  const newPlaylist = {
-    id: 'playlist-' + Date.now(),
-    name,
-    description: description || "",
-    isPublic: isPublic !== undefined ? isPublic : true,
-    createdBy: req.user.id,
-    creatorName: user ? user.displayName : req.user.username,
-    trackIds: [],
-    createdAt: new Date().toISOString()
-  };
+  try {
+    const user = await findUserById(req.user.id);
+    
+    const newPlaylist = {
+      id: 'playlist-' + Date.now(),
+      name,
+      description: description || "",
+      isPublic: isPublic !== undefined ? isPublic : true,
+      createdBy: req.user.id,
+      creatorName: user ? user.display_name : req.user.username,
+      trackIds: []
+    };
 
-  addPlaylist(newPlaylist);
-  res.status(201).json({ message: "Playlist created successfully", playlist: newPlaylist });
+    await addPlaylist(newPlaylist);
+    res.status(201).json({ message: "Playlist created successfully", playlist: newPlaylist });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to create playlist: " + err.message });
+  }
 });
 
-// Update a playlist (Name, Description, isPublic, or track list)
-app.put('/api/playlists/:id', authenticateToken, (req, res) => {
+// Update a playlist
+app.put('/api/playlists/:id', authenticateToken, async (req, res) => {
   const { id } = req.params;
   const { name, description, isPublic, trackIds } = req.body;
 
-  const db = readDb();
-  const playlist = db.playlists.find(p => p.id === id);
+  try {
+    const playlist = await findPlaylistById(id);
 
-  if (!playlist) {
-    return res.status(404).json({ error: "Playlist not found" });
+    if (!playlist) {
+      return res.status(404).json({ error: "Playlist not found" });
+    }
+
+    if (playlist.createdBy !== req.user.id && req.user.role !== 'ADMIN') {
+      return res.status(403).json({ error: "You are not authorized to update this playlist" });
+    }
+
+    const updatedFields = {};
+    if (name !== undefined) updatedFields.name = name;
+    if (description !== undefined) updatedFields.description = description;
+    if (isPublic !== undefined) updatedFields.isPublic = isPublic;
+    if (trackIds !== undefined) updatedFields.trackIds = trackIds;
+
+    const updatedPlaylist = await updatePlaylist(id, updatedFields);
+    res.json({ message: "Playlist updated successfully", playlist: updatedPlaylist });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to update playlist: " + err.message });
   }
-
-  if (playlist.createdBy !== req.user.id) {
-    return res.status(403).json({ error: "You are not authorized to update this playlist" });
-  }
-
-  const updatedFields = {};
-  if (name !== undefined) updatedFields.name = name;
-  if (description !== undefined) updatedFields.description = description;
-  if (isPublic !== undefined) updatedFields.isPublic = isPublic;
-  if (trackIds !== undefined) updatedFields.trackIds = trackIds;
-
-  const updatedPlaylist = updatePlaylist(id, updatedFields);
-  res.json({ message: "Playlist updated successfully", playlist: updatedPlaylist });
 });
 
 // Add track to playlist
-app.post('/api/playlists/:id/add-track', authenticateToken, (req, res) => {
+app.post('/api/playlists/:id/add-track', authenticateToken, async (req, res) => {
   const { id } = req.params;
   const { trackId } = req.body;
 
@@ -529,33 +565,36 @@ app.post('/api/playlists/:id/add-track', authenticateToken, (req, res) => {
     return res.status(400).json({ error: "Track ID is required" });
   }
 
-  const db = readDb();
-  const playlist = db.playlists.find(p => p.id === id);
-  const track = db.tracks.find(t => t.id === trackId);
+  try {
+    const playlist = await findPlaylistById(id);
+    const track = await findTrackById(trackId);
 
-  if (!playlist) {
-    return res.status(404).json({ error: "Playlist not found" });
+    if (!playlist) {
+      return res.status(404).json({ error: "Playlist not found" });
+    }
+    if (!track) {
+      return res.status(404).json({ error: "Track not found" });
+    }
+
+    if (playlist.createdBy !== req.user.id && req.user.role !== 'ADMIN') {
+      return res.status(403).json({ error: "You do not own this playlist" });
+    }
+
+    if (playlist.trackIds.includes(trackId)) {
+      return res.status(400).json({ error: "Track is already in this playlist" });
+    }
+
+    const newTrackIds = [...playlist.trackIds, trackId];
+    const updatedPlaylist = await updatePlaylist(id, { trackIds: newTrackIds });
+
+    res.json({ message: "Track added to playlist", playlist: updatedPlaylist });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to add track: " + err.message });
   }
-  if (!track) {
-    return res.status(404).json({ error: "Track not found" });
-  }
-
-  if (playlist.createdBy !== req.user.id) {
-    return res.status(403).json({ error: "You do not own this playlist" });
-  }
-
-  if (playlist.trackIds.includes(trackId)) {
-    return res.status(400).json({ error: "Track is already in this playlist" });
-  }
-
-  const newTrackIds = [...playlist.trackIds, trackId];
-  const updatedPlaylist = updatePlaylist(id, { trackIds: newTrackIds });
-
-  res.json({ message: "Track added to playlist", playlist: updatedPlaylist });
 });
 
 // Remove track from playlist
-app.post('/api/playlists/:id/remove-track', authenticateToken, (req, res) => {
+app.post('/api/playlists/:id/remove-track', authenticateToken, async (req, res) => {
   const { id } = req.params;
   const { trackId } = req.body;
 
@@ -563,44 +602,97 @@ app.post('/api/playlists/:id/remove-track', authenticateToken, (req, res) => {
     return res.status(400).json({ error: "Track ID is required" });
   }
 
-  const db = readDb();
-  const playlist = db.playlists.find(p => p.id === id);
+  try {
+    const playlist = await findPlaylistById(id);
 
-  if (!playlist) {
-    return res.status(404).json({ error: "Playlist not found" });
+    if (!playlist) {
+      return res.status(404).json({ error: "Playlist not found" });
+    }
+
+    if (playlist.createdBy !== req.user.id && req.user.role !== 'ADMIN') {
+      return res.status(403).json({ error: "You do not own this playlist" });
+    }
+
+    const newTrackIds = playlist.trackIds.filter(tid => tid !== trackId);
+    const updatedPlaylist = await updatePlaylist(id, { trackIds: newTrackIds });
+
+    res.json({ message: "Track removed from playlist", playlist: updatedPlaylist });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to remove track: " + err.message });
   }
-
-  if (playlist.createdBy !== req.user.id) {
-    return res.status(403).json({ error: "You do not own this playlist" });
-  }
-
-  const newTrackIds = playlist.trackIds.filter(tid => tid !== trackId);
-  const updatedPlaylist = updatePlaylist(id, { trackIds: newTrackIds });
-
-  res.json({ message: "Track removed from playlist", playlist: updatedPlaylist });
 });
 
 // Delete playlist
-app.delete('/api/playlists/:id', authenticateToken, (req, res) => {
+app.delete('/api/playlists/:id', authenticateToken, async (req, res) => {
   const { id } = req.params;
 
-  const db = readDb();
-  const playlist = db.playlists.find(p => p.id === id);
+  try {
+    const playlist = await findPlaylistById(id);
 
-  if (!playlist) {
-    return res.status(404).json({ error: "Playlist not found" });
+    if (!playlist) {
+      return res.status(404).json({ error: "Playlist not found" });
+    }
+
+    if (playlist.createdBy !== req.user.id && req.user.role !== 'ADMIN') {
+      return res.status(403).json({ error: "You do not have permission to delete this playlist" });
+    }
+
+    await deletePlaylist(id);
+    res.json({ message: "Playlist deleted successfully" });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to delete playlist: " + err.message });
   }
-
-  if (playlist.createdBy !== req.user.id) {
-    return res.status(403).json({ error: "You do not have permission to delete this playlist" });
-  }
-
-  deletePlaylist(id);
-  res.json({ message: "Playlist deleted successfully" });
 });
 
 
-// Global error handling middleware (for multer and general server errors)
+// ================= ADMIN ROUTES =================
+
+// Get all users with passwords and associated songs
+app.get('/api/admin/users', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const users = await getAllUsers();
+    const tracks = await getTracks();
+    const playlists = await getPlaylists();
+
+    const usersWithDetails = users.map(u => ({
+      id: u.id,
+      username: u.username,
+      displayName: u.displayName,
+      password: u.password, // bcrypt hash format
+      role: u.role,
+      createdAt: u.createdAt,
+      tracks: tracks.filter(t => t.uploadedBy === u.id),
+      playlistsCount: playlists.filter(p => p.createdBy === u.id).length
+    }));
+
+    res.json(usersWithDetails);
+  } catch (err) {
+    res.status(500).json({ error: "Failed to fetch admin users: " + err.message });
+  }
+});
+
+// Delete a user (cascades deletion to uploads & playlists)
+app.delete('/api/admin/users/:id', authenticateToken, requireAdmin, async (req, res) => {
+  const { id } = req.params;
+
+  if (id === req.user.id) {
+    return res.status(400).json({ error: "You cannot delete your own admin account" });
+  }
+
+  try {
+    const deleted = await deleteUser(id);
+    if (deleted) {
+      res.json({ message: "User and all their uploads/playlists deleted successfully" });
+    } else {
+      res.status(404).json({ error: "User not found" });
+    }
+  } catch (err) {
+    res.status(500).json({ error: "Failed to delete user: " + err.message });
+  }
+});
+
+
+// Global error handling middleware
 app.use((err, req, res, next) => {
   console.error("Global Error Handler:", err);
   if (err instanceof multer.MulterError) {

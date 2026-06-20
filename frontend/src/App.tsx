@@ -57,6 +57,18 @@ interface User {
   id: string;
   username: string;
   displayName: string;
+  role?: 'USER' | 'ADMIN';
+}
+
+interface AdminUser {
+  id: string;
+  username: string;
+  displayName: string;
+  password?: string;
+  role: 'USER' | 'ADMIN';
+  createdAt: string;
+  tracks: Track[];
+  playlistsCount: number;
 }
 
 interface Toast {
@@ -71,13 +83,14 @@ export default function App() {
   const [user, setUser] = useState<User | null>(null);
   
   // --- UI Navigation ---
-  const [activeTab, setActiveTab] = useState<'home' | 'my-playlists' | 'upload' | 'playlist-detail'>('home');
+  const [activeTab, setActiveTab] = useState<'home' | 'my-playlists' | 'upload' | 'playlist-detail' | 'admin'>('home');
   const [selectedPlaylistId, setSelectedPlaylistId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   
   // --- Data State ---
   const [tracks, setTracks] = useState<Track[]>([]);
   const [playlists, setPlaylists] = useState<Playlist[]>([]);
+  const [adminUsers, setAdminUsers] = useState<AdminUser[]>([]);
   
   // --- Modals and Popovers ---
   const [authModalOpen, setAuthModalOpen] = useState(false);
@@ -260,9 +273,49 @@ export default function App() {
     }
   };
 
+  const fetchAdminUsers = async () => {
+    if (!token || !user || user.role !== 'ADMIN') return;
+    try {
+      const res = await fetch(`${API_BASE}/admin/users`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setAdminUsers(data);
+      }
+    } catch (err) {
+      console.error("Failed to fetch admin users:", err);
+    }
+  };
+
+  const handleDeleteUser = async (userId: string) => {
+    if (!window.confirm("Are you sure you want to delete this user? All their uploaded songs and playlists will be deleted!")) {
+      return;
+    }
+    try {
+      const res = await fetch(`${API_BASE}/admin/users/${userId}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showToast(data.error || "Failed to delete user", "error");
+        return;
+      }
+      showToast("User deleted successfully", "success");
+      fetchAdminUsers();
+      fetchData();
+    } catch (err) {
+      showToast("Server error", "error");
+    }
+  };
+
   useEffect(() => {
     fetchData();
-  }, [token]);
+    if (activeTab === 'admin') {
+      fetchAdminUsers();
+    }
+  }, [token, activeTab, user]);
 
   // --- Initialize Audio Element ---
   useEffect(() => {
@@ -1023,6 +1076,16 @@ export default function App() {
                 <span>Upload & Import</span>
               </div>
             )}
+
+            {user && user.role === 'ADMIN' && (
+              <div 
+                className={`nav-item ${activeTab === 'admin' ? 'active' : ''}`}
+                onClick={() => { setActiveTab('admin'); setSelectedPlaylistId(null); }}
+              >
+                <Globe size={18} />
+                <span>Admin Panel</span>
+              </div>
+            )}
           </div>
 
           <div className="sidebar-section">
@@ -1635,6 +1698,86 @@ export default function App() {
                   </form>
                 </div>
 
+              </div>
+            )}
+
+            {/* 4. ADMIN DASHBOARD TAB */}
+            {activeTab === 'admin' && user && user.role === 'ADMIN' && (
+              <div className="creator-panel" style={{ width: '100%', maxWidth: 'none', background: 'var(--card-bg)', border: '1px solid var(--border-color)', borderRadius: '12px', padding: '24px' }}>
+                <div className="panel-header" style={{ marginBottom: '24px' }}>
+                  <h3 style={{ fontSize: '18px', fontWeight: 700, color: 'var(--text-main)' }}>System Admin Dashboard</h3>
+                  <p style={{ color: 'var(--text-dim)', fontSize: '14px', marginTop: '4px' }}>
+                    Manage registered users, view usernames, password hashes, uploaded songs, and delete accounts.
+                  </p>
+                </div>
+
+                <div className="admin-table-container" style={{ overflowX: 'auto' }}>
+                  <table className="track-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
+                    <thead>
+                      <tr style={{ borderBottom: '1px solid var(--border-color)', textAlign: 'left' }}>
+                        <th style={{ padding: '12px 16px', color: 'var(--text-dim)', fontSize: '13px' }}>ID</th>
+                        <th style={{ padding: '12px 16px', color: 'var(--text-dim)', fontSize: '13px' }}>Username</th>
+                        <th style={{ padding: '12px 16px', color: 'var(--text-dim)', fontSize: '13px' }}>Display Name</th>
+                        <th style={{ padding: '12px 16px', color: 'var(--text-dim)', fontSize: '13px' }}>Password (Bcrypt Hash)</th>
+                        <th style={{ padding: '12px 16px', color: 'var(--text-dim)', fontSize: '13px' }}>Role</th>
+                        <th style={{ padding: '12px 16px', color: 'var(--text-dim)', fontSize: '13px' }}>Songs Uploaded</th>
+                        <th style={{ padding: '12px 16px', color: 'var(--text-dim)', fontSize: '13px' }}>Playlists</th>
+                        <th style={{ padding: '12px 16px', color: 'var(--text-dim)', fontSize: '13px', textAlign: 'right' }}>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {adminUsers.map(u => (
+                        <tr key={u.id} className="track-row" style={{ borderBottom: '1px solid rgba(255,255,255,0.04)', height: '60px' }}>
+                          <td style={{ padding: '12px 16px', fontSize: '12px', color: 'var(--text-dim)' }}>{u.id}</td>
+                          <td style={{ padding: '12px 16px', fontWeight: 600, color: 'var(--text-main)' }}>{u.username}</td>
+                          <td style={{ padding: '12px 16px', color: 'var(--text-main)' }}>{u.displayName}</td>
+                          <td style={{ padding: '12px 16px', fontSize: '11px', color: 'var(--text-dim)', fontFamily: 'monospace', maxWidth: '220px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={u.password}>
+                            {u.password || "N/A"}
+                          </td>
+                          <td style={{ padding: '12px 16px' }}>
+                            <span className={`badge-source ${u.role === 'ADMIN' ? 'upload' : 'youtube'}`} style={{ textTransform: 'uppercase', fontSize: '10px', padding: '2px 8px' }}>
+                              {u.role}
+                            </span>
+                          </td>
+                          <td style={{ padding: '12px 16px' }}>
+                            {u.tracks && u.tracks.length > 0 ? (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                <span style={{ fontWeight: 600, fontSize: '13px', color: 'var(--text-main)' }}>{u.tracks.length} song(s)</span>
+                                <span style={{ fontSize: '11px', color: 'var(--text-dim)', maxWidth: '250px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={u.tracks.map(t => t.title).join(', ')}>
+                                  {u.tracks.map(t => t.title).join(', ')}
+                                </span>
+                              </div>
+                            ) : (
+                              <span style={{ color: 'var(--text-dim)', fontSize: '13px' }}>0 songs</span>
+                            )}
+                          </td>
+                          <td style={{ padding: '12px 16px', color: 'var(--text-main)', fontSize: '13px' }}>{u.playlistsCount} playlist(s)</td>
+                          <td style={{ padding: '12px 16px', textAlign: 'right' }}>
+                            {u.id !== user.id ? (
+                              <button 
+                                className="btn btn-secondary delete btn-icon-only"
+                                title="Delete User"
+                                onClick={() => handleDeleteUser(u.id)}
+                                style={{ padding: '6px', borderRadius: '6px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}
+                              >
+                                <Trash2 size={15} />
+                              </button>
+                            ) : (
+                              <span style={{ fontSize: '12px', color: 'var(--text-dim)', paddingRight: '8px' }}>Active Admin</span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                      {adminUsers.length === 0 && (
+                        <tr>
+                          <td colSpan={8} style={{ textAlign: 'center', padding: '40px', color: 'var(--text-dim)' }}>
+                            No users found.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             )}
 
