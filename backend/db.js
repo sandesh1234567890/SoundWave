@@ -7,16 +7,19 @@ const { Pool } = pg;
 
 // Connection Pool Configuration
 const connectionString = process.env.DATABASE_URL;
+const isProduction = process.env.NODE_ENV === 'production' || process.env.VERCEL === '1';
+
 const pool = connectionString
   ? new Pool({ connectionString, ssl: { rejectUnauthorized: false } })
   : new Pool({
-      host: process.env.DB_HOST || 'db.obziwglqklrzsfhpwscm.supabase.co',
-      port: parseInt(process.env.DB_PORT || '5432'),
-      user: process.env.DB_USER || 'postgres',
+      host: isProduction ? 'aws-0-ap-northeast-1.pooler.supabase.com' : (process.env.DB_HOST || 'db.obziwglqklrzsfhpwscm.supabase.co'),
+      port: isProduction ? 6543 : parseInt(process.env.DB_PORT || '5432'),
+      user: isProduction ? 'postgres.obziwglqklrzsfhpwscm' : (process.env.DB_USER || 'postgres'),
       password: process.env.DB_PASSWORD || 'IN6UIr8IUujht187',
       database: process.env.DB_DATABASE || 'postgres',
       ssl: { rejectUnauthorized: false }
     });
+
 
 
 // Initial default seed data
