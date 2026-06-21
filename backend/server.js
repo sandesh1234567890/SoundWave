@@ -8,6 +8,8 @@ import { fileURLToPath } from 'url';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import axios from 'axios';
+import dns from 'dns';
+
 
 import {
   initDb,
@@ -702,8 +704,48 @@ app.delete('/api/admin/users/:id', authenticateToken, requireAdmin, async (req, 
 });
 
 
+
+// Temporary debug endpoint to check environment variables and test DNS resolution in Vercel
+app.get('/api/debug-env', async (req, res) => {
+  const dbUrl = process.env.DATABASE_URL;
+  const maskedDbUrl = dbUrl ? dbUrl.replace(/:([^:@]+)@/, ':****@') : null;
+  
+  const dnsResults = {};
+  const hostsToTest = [
+    process.env.DB_HOST || 'db.obziwglqklrzsfhpwscm.supabase.co',
+    'db.obziwglqklrzsfhpwscm.supabase.co',
+    'aws-0-ap-northeast-1.pooler.supabase.com'
+  ];
+  
+  for (const host of hostsToTest) {
+    try {
+      dnsResults[host] = await new Promise((resolve, reject) => {
+        dns.lookup(host, { all: true }, (err, addresses) => {
+          if (err) reject(err);
+          else resolve(addresses);
+        });
+      });
+    } catch (err) {
+      dnsResults[host] = { error: err.message };
+    }
+  }
+  
+  res.json({
+    env: {
+      NODE_ENV: process.env.NODE_ENV,
+      DB_HOST: process.env.DB_HOST,
+      DB_PORT: process.env.DB_PORT,
+      DB_USER: process.env.DB_USER,
+      DATABASE_URL_SET: !!dbUrl,
+      DATABASE_URL_MASKED: maskedDbUrl,
+    },
+    dnsResults
+  });
+});
+
 // Global error handling middleware
 app.use((err, req, res, next) => {
+
   console.error("Global Error Handler:", err);
   if (err instanceof multer.MulterError) {
     return res.status(400).json({ error: `Upload error: ${err.message}` });
