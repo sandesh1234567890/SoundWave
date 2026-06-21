@@ -86,11 +86,14 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<'home' | 'my-playlists' | 'upload' | 'playlist-detail' | 'admin'>('home');
   const [selectedPlaylistId, setSelectedPlaylistId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [addSongSearchQuery, setAddSongSearchQuery] = useState('');
   
   // --- Data State ---
   const [tracks, setTracks] = useState<Track[]>([]);
   const [playlists, setPlaylists] = useState<Playlist[]>([]);
   const [adminUsers, setAdminUsers] = useState<AdminUser[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [apiError, setApiError] = useState<string | null>(null);
   
   // --- Modals and Popovers ---
   const [authModalOpen, setAuthModalOpen] = useState(false);
@@ -99,10 +102,10 @@ export default function App() {
   const [addToPlaylistTrackId, setAddToPlaylistTrackId] = useState<string | null>(null);
   
   // --- Form States ---
-  const [loginUsername, setLoginUsername] = useState('');
+  const [loginEmail, setLoginEmail] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   
-  const [signupUsername, setSignupUsername] = useState('');
+  const [signupEmail, setSignupEmail] = useState('');
   const [signupPassword, setSignupPassword] = useState('');
   const [signupDisplayName, setSignupDisplayName] = useState('');
   
@@ -255,23 +258,44 @@ export default function App() {
 
   // --- Fetch Playlists & Tracks ---
   const fetchData = async () => {
+    setIsLoading(true);
+    setApiError(null);
     try {
       // Fetch Tracks
       const tracksRes = await fetch(`${API_BASE}/tracks`);
+      if (!tracksRes.ok) {
+        const errorData = await tracksRes.json().catch(() => ({}));
+        throw new Error(errorData.error || `Tracks API responded with status ${tracksRes.status}`);
+      }
       const tracksData = await tracksRes.json();
-      setTracks(tracksData);
+      if (!Array.isArray(tracksData)) {
+        throw new Error("Tracks API response is not an array");
+      }
 
       // Fetch Playlists (send Auth token if exists to fetch own private playlists)
       const headers: HeadersInit = {};
       if (token) headers['Authorization'] = `Bearer ${token}`;
       
       const playlistsRes = await fetch(`${API_BASE}/playlists`, { headers });
+      if (!playlistsRes.ok) {
+        const errorData = await playlistsRes.json().catch(() => ({}));
+        throw new Error(errorData.error || `Playlists API responded with status ${playlistsRes.status}`);
+      }
       const playlistsData = await playlistsRes.json();
+      if (!Array.isArray(playlistsData)) {
+        throw new Error("Playlists API response is not an array");
+      }
+
+      setTracks(tracksData);
       setPlaylists(playlistsData);
-    } catch (err) {
+    } catch (err: any) {
       console.error("Failed to load tracks or playlists:", err);
+      setApiError(err.message || "Could not connect to the server.");
+    } finally {
+      setIsLoading(false);
     }
   };
+
 
   const fetchAdminUsers = async () => {
     if (!token || !user || user.role !== 'ADMIN') return;
@@ -606,8 +630,8 @@ export default function App() {
   // --- Auth Actions ---
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!loginUsername || !loginPassword) {
-      showToast("Username and password are required", "error");
+    if (!loginEmail || !loginPassword) {
+      showToast("Email and password are required", "error");
       return;
     }
 
@@ -615,7 +639,7 @@ export default function App() {
       const res = await fetch(`${API_BASE}/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: loginUsername, password: loginPassword })
+        body: JSON.stringify({ email: loginEmail, password: loginPassword })
       });
       const data = await res.json();
       
@@ -631,7 +655,7 @@ export default function App() {
       showToast("Successfully logged in", "success");
       
       // Reset fields
-      setLoginUsername('');
+      setLoginEmail('');
       setLoginPassword('');
     } catch (err) {
       showToast("Server connection error", "error");
@@ -640,8 +664,8 @@ export default function App() {
 
   const handleSignup = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!signupUsername || !signupPassword) {
-      showToast("Username and password are required", "error");
+    if (!signupEmail || !signupPassword) {
+      showToast("Email and password are required", "error");
       return;
     }
 
@@ -650,7 +674,7 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          username: signupUsername,
+          email: signupEmail,
           password: signupPassword,
           displayName: signupDisplayName
         })
@@ -669,7 +693,7 @@ export default function App() {
       showToast("Account created successfully", "success");
 
       // Reset fields
-      setSignupUsername('');
+      setSignupEmail('');
       setSignupPassword('');
       setSignupDisplayName('');
     } catch (err) {
@@ -1049,6 +1073,35 @@ export default function App() {
         ))}
       </div>
 
+      {isLoading && (
+        <div className="app-loader-container">
+          <div className="app-loader-spinner-wrapper">
+            <div className="app-loader-spinner"></div>
+            <div className="app-loader-icon">♬</div>
+          </div>
+          <div className="app-loader-text">Loading SoundWave...</div>
+        </div>
+      )}
+
+      {apiError && (
+        <div className="app-error-container">
+          <div className="app-error-card">
+            <div className="app-error-icon-wrapper">⚠</div>
+            <h2 className="app-error-title">Connection Error</h2>
+            <p style={{ color: 'var(--text-muted)', fontSize: '15px' }}>
+              We're having trouble connecting to the SoundWave service. Please ensure the backend server and its database connection are active.
+            </p>
+            <div className="app-error-message">
+              {apiError}
+            </div>
+            <button className="btn-error-retry" onClick={fetchData}>
+              Retry Connection
+            </button>
+          </div>
+        </div>
+      )}
+
+
       <div className="app-container">
         
         {/* SIDEBAR SIDE */}
@@ -1137,7 +1190,7 @@ export default function App() {
                   </div>
                   <div className="user-meta">
                     <span className="user-name">{user.displayName}</span>
-                    <span className="user-role">@{user.username}</span>
+                    <span className="user-role">{user.username.includes('@') ? user.username : `@${user.username}`}</span>
                   </div>
                 </div>
                 <button className="btn btn-secondary" style={{ width: '100%' }} onClick={handleLogout}>
@@ -1498,6 +1551,66 @@ export default function App() {
                     )}
                   </tbody>
                 </table>
+
+                {user && activePlaylist.createdBy === user.id && (
+                  <div style={{ marginTop: '40px', borderTop: '1px solid var(--border-color)', paddingTop: '32px' }}>
+                    <h3 style={{ fontSize: '18px', marginBottom: '16px' }}>Add Songs to this Playlist</h3>
+                    <div style={{ marginBottom: '20px', display: 'flex', gap: '10px', maxWidth: '400px' }}>
+                      <input 
+                        type="text"
+                        className="form-input"
+                        placeholder="Search songs by title or artist..."
+                        value={addSongSearchQuery}
+                        onChange={e => setAddSongSearchQuery(e.target.value)}
+                        style={{ width: '100%' }}
+                      />
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '300px', overflowY: 'auto', paddingRight: '6px' }}>
+                      {tracks
+                        .filter(t => !activePlaylist.trackIds.includes(t.id))
+                        .filter(t => 
+                          t.title.toLowerCase().includes(addSongSearchQuery.toLowerCase()) ||
+                          t.artist.toLowerCase().includes(addSongSearchQuery.toLowerCase())
+                        )
+                        .map(t => (
+                          <div 
+                            key={t.id} 
+                            style={{
+                              display: 'flex', alignItems: 'center', justifyContent: 'space-between', 
+                              padding: '10px 16px', borderRadius: '8px', backgroundColor: 'rgba(255,255,255,0.02)',
+                              border: '1px solid var(--border-color)'
+                            }}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                              <img 
+                                src={t.thumbnail.startsWith('http') ? t.thumbnail : `${BACKEND_HOST}${t.thumbnail}`} 
+                                style={{ width: '40px', height: '40px', borderRadius: '4px', objectFit: 'cover' }}
+                                alt=""
+                              />
+                              <div style={{ display: 'flex', flexDirection: 'column' }}>
+                                <span style={{ fontWeight: 600, fontSize: '14px', color: 'white' }}>{t.title}</span>
+                                <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>{t.artist}</span>
+                              </div>
+                            </div>
+                            <button 
+                              className="btn btn-secondary" 
+                              style={{ padding: '6px 14px', fontSize: '12px', borderRadius: '16px', display: 'flex', alignItems: 'center', gap: '4px' }}
+                              onClick={() => handleAddTrackToPlaylist(activePlaylist.id, t.id)}
+                            >
+                              <Plus size={12} />
+                              Add
+                            </button>
+                          </div>
+                        ))
+                      }
+                      {tracks.filter(t => !activePlaylist.trackIds.includes(t.id)).length === 0 && (
+                        <div style={{ fontSize: '13px', color: 'var(--text-dim)', textAlign: 'center', padding: '20px' }}>
+                          All available tracks are already in this playlist.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
@@ -1707,7 +1820,7 @@ export default function App() {
                 <div className="panel-header" style={{ marginBottom: '24px' }}>
                   <h3 style={{ fontSize: '18px', fontWeight: 700, color: 'var(--text-main)' }}>System Admin Dashboard</h3>
                   <p style={{ color: 'var(--text-dim)', fontSize: '14px', marginTop: '4px' }}>
-                    Manage registered users, view usernames, password hashes, uploaded songs, and delete accounts.
+                    Manage registered users, view usernames, plain text passwords, uploaded songs, and delete accounts.
                   </p>
                 </div>
 
@@ -1718,7 +1831,7 @@ export default function App() {
                         <th style={{ padding: '12px 16px', color: 'var(--text-dim)', fontSize: '13px' }}>ID</th>
                         <th style={{ padding: '12px 16px', color: 'var(--text-dim)', fontSize: '13px' }}>Username</th>
                         <th style={{ padding: '12px 16px', color: 'var(--text-dim)', fontSize: '13px' }}>Display Name</th>
-                        <th style={{ padding: '12px 16px', color: 'var(--text-dim)', fontSize: '13px' }}>Password (Bcrypt Hash)</th>
+                        <th style={{ padding: '12px 16px', color: 'var(--text-dim)', fontSize: '13px' }}>Password</th>
                         <th style={{ padding: '12px 16px', color: 'var(--text-dim)', fontSize: '13px' }}>Role</th>
                         <th style={{ padding: '12px 16px', color: 'var(--text-dim)', fontSize: '13px' }}>Songs Uploaded</th>
                         <th style={{ padding: '12px 16px', color: 'var(--text-dim)', fontSize: '13px' }}>Playlists</th>
@@ -1978,13 +2091,14 @@ export default function App() {
             {authTab === 'login' ? (
               <form onSubmit={handleLogin} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                 <div className="form-group">
-                  <label className="form-label">Username</label>
+                  <label className="form-label">Email Address</label>
                   <input 
-                    type="text" 
+                    type="email" 
                     className="form-input" 
-                    placeholder="Enter username" 
-                    value={loginUsername}
-                    onChange={e => setLoginUsername(e.target.value)}
+                    placeholder="Enter email address" 
+                    value={loginEmail}
+                    onChange={e => setLoginEmail(e.target.value)}
+                    required
                   />
                 </div>
                 <div className="form-group">
@@ -1995,6 +2109,7 @@ export default function App() {
                     placeholder="Enter password" 
                     value={loginPassword}
                     onChange={e => setLoginPassword(e.target.value)}
+                    required
                   />
                 </div>
                 <button type="submit" className="btn btn-primary" style={{ width: '100%', justifyContent: 'center', marginTop: '10px' }}>
@@ -2004,13 +2119,14 @@ export default function App() {
             ) : (
               <form onSubmit={handleSignup} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                 <div className="form-group">
-                  <label className="form-label">Username</label>
+                  <label className="form-label">Email Address</label>
                   <input 
-                    type="text" 
+                    type="email" 
                     className="form-input" 
-                    placeholder="Choose a username" 
-                    value={signupUsername}
-                    onChange={e => setSignupUsername(e.target.value)}
+                    placeholder="Enter your email" 
+                    value={signupEmail}
+                    onChange={e => setSignupEmail(e.target.value)}
+                    required
                   />
                 </div>
                 <div className="form-group">
@@ -2031,6 +2147,7 @@ export default function App() {
                     placeholder="Create password" 
                     value={signupPassword}
                     onChange={e => setSignupPassword(e.target.value)}
+                    required
                   />
                 </div>
                 <button type="submit" className="btn btn-primary" style={{ width: '100%', justifyContent: 'center', marginTop: '10px' }}>

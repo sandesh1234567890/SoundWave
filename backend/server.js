@@ -131,25 +131,25 @@ const upload = multer({
 // ================= AUTH ROUTES =================
 
 app.post('/api/auth/signup', async (req, res) => {
-  const { username, password, displayName } = req.body;
+  const { password, displayName } = req.body;
+  const email = req.body.email || req.body.username;
 
-  if (!username || !password) {
-    return res.status(400).json({ error: "Username and password are required" });
+  if (!email || !password) {
+    return res.status(400).json({ error: "Email and password are required" });
   }
 
   try {
-    const existingUser = await findUserByUsername(username);
+    const existingUser = await findUserByUsername(email);
     if (existingUser) {
-      return res.status(400).json({ error: "Username is already taken" });
+      return res.status(400).json({ error: "Email is already registered" });
     }
 
-    const hashedPassword = await bcrypt.hash(password, 10);
     const newUser = {
       id: 'user-' + Date.now(),
-      username,
-      displayName: displayName || username,
-      password: hashedPassword,
-      role: username.toLowerCase() === 'admin' ? 'ADMIN' : 'USER'
+      username: email,
+      displayName: displayName || email.split('@')[0],
+      password: password,
+      role: (email.toLowerCase() === 'admin' || email.toLowerCase().startsWith('admin@')) ? 'ADMIN' : 'USER'
     };
 
     await createUser(newUser);
@@ -177,21 +177,22 @@ app.post('/api/auth/signup', async (req, res) => {
 });
 
 app.post('/api/auth/login', async (req, res) => {
-  const { username, password } = req.body;
+  const { password } = req.body;
+  const email = req.body.email || req.body.username;
 
-  if (!username || !password) {
-    return res.status(400).json({ error: "Username and password are required" });
+  if (!email || !password) {
+    return res.status(400).json({ error: "Email and password are required" });
   }
 
   try {
-    const user = await findUserByUsername(username);
+    const user = await findUserByUsername(email);
     if (!user) {
-      return res.status(400).json({ error: "Invalid username or password" });
+      return res.status(400).json({ error: "Invalid email or password" });
     }
 
-    const isMatch = await bcrypt.compare(password, user.password);
+    const isMatch = (password === user.password);
     if (!isMatch) {
-      return res.status(400).json({ error: "Invalid username or password" });
+      return res.status(400).json({ error: "Invalid email or password" });
     }
 
     // Generate token containing user's role
@@ -373,8 +374,17 @@ app.post('/api/tracks/youtube', authenticateToken, async (req, res) => {
   }
 
   const videoId = match[1];
+  const trackId = 'track-yt-' + videoId;
 
   try {
+    const existing = await findTrackById(trackId);
+    if (existing) {
+      return res.status(200).json({ 
+        message: "YouTube video already imported previously", 
+        track: existing 
+      });
+    }
+
     // 1. Fetch metadata using noembed
     const metadataUrl = `https://noembed.com/embed?url=https://www.youtube.com/watch?v=${videoId}`;
     const metaResponse = await axios.get(metadataUrl);

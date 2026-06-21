@@ -7,7 +7,7 @@ const { Pool } = pg;
 
 // Connection Pool Configuration
 const connectionString = process.env.DATABASE_URL;
-const pool = connectionString 
+const pool = (connectionString && !connectionString.includes('6543') && !connectionString.includes('pooler'))
   ? new Pool({ connectionString, ssl: { rejectUnauthorized: false } })
   : new Pool({
       host: process.env.DB_HOST || 'db.obziwglqklrzsfhpwscm.supabase.co',
@@ -113,15 +113,13 @@ export async function initDb() {
     console.log("Supabase PostgreSQL tables initialized successfully.");
 
     // Seed default admin user if not exists
-    const adminCheck = await pool.query("SELECT * FROM users WHERE role = 'ADMIN' OR username = 'admin'");
+    const adminCheck = await pool.query("SELECT * FROM users WHERE role = 'ADMIN' OR username = 'admin' OR username = 'admin@soundwave.com'");
     if (adminCheck.rows.length === 0) {
-      const bcrypt = await import('bcryptjs');
-      const hashedAdminPassword = await bcrypt.default.hash('admin123', 10);
       await pool.query(`
         INSERT INTO users (id, username, display_name, password, role)
         VALUES ($1, $2, $3, $4, $5)
-      `, ['user-admin', 'admin', 'System Administrator', hashedAdminPassword, 'ADMIN']);
-      console.log("Seeded default admin account: admin / admin123");
+      `, ['user-admin', 'admin@soundwave.com', 'System Administrator', 'admin123', 'ADMIN']);
+      console.log("Seeded default admin account: admin@soundwave.com / admin123");
     }
 
     // Seed default tracks
