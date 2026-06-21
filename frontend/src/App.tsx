@@ -25,8 +25,10 @@ const YoutubeIcon = ({ size = 24, className = "" }: { size?: number, className?:
 );
 
 // API Base configuration
-const API_BASE = (import.meta.env.VITE_API_BASE as string) || "http://localhost:5000/api";
-const BACKEND_HOST = (import.meta.env.VITE_BACKEND_HOST as string) || "http://localhost:5000";
+const isProduction = window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1';
+const API_BASE = (import.meta.env.VITE_API_BASE as string) || (isProduction ? "/_/backend/api" : "http://localhost:5000/api");
+const BACKEND_HOST = (import.meta.env.VITE_BACKEND_HOST as string) || (isProduction ? "/_/backend" : "http://localhost:5000");
+
 
 
 interface Track {

@@ -7,7 +7,7 @@ const { Pool } = pg;
 
 // Connection Pool Configuration
 const connectionString = process.env.DATABASE_URL;
-const pool = (connectionString && !connectionString.includes('6543') && !connectionString.includes('pooler'))
+const pool = connectionString
   ? new Pool({ connectionString, ssl: { rejectUnauthorized: false } })
   : new Pool({
       host: process.env.DB_HOST || 'db.obziwglqklrzsfhpwscm.supabase.co',
@@ -17,6 +17,7 @@ const pool = (connectionString && !connectionString.includes('6543') && !connect
       database: process.env.DB_DATABASE || 'postgres',
       ssl: { rejectUnauthorized: false }
     });
+
 
 // Initial default seed data
 const seedTracks = [
